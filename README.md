@@ -5,7 +5,7 @@
 | Service | Source             | Playlist                                                                                                                |
 | ------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
 | AESport | https://aesport.tv | [playlists/aesport.m3u](https://raw.githubusercontent.com/YoCodeCrafters/playlist-generator/main/playlists/aesport.m3u) |
-| DaddyHD | https://dlhd.sx    | [playlists/daddyhd.m3u](https://raw.githubusercontent.com/YoCodeCrafters/playlist-generator/main/playlists/daddyhd.m3u) |
+| DaddyHD | https://thedaddy.to   | [playlists/daddyhd.m3u](https://raw.githubusercontent.com/YoCodeCrafters/playlist-generator/main/playlists/daddyhd.m3u) |
 
 ### 🎁 Features
 
