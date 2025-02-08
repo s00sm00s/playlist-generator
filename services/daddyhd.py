@@ -9,7 +9,7 @@ class DaddyHD(BaseService):
     def __init__(self) -> None:
         super().__init__(
             SERVICE_NAME="DaddyHD",
-            SERVICE_URL="https://dlhd.sx/24-7-channels.php",
+            SERVICE_URL="https://thedaddy.to/24-7-channels.php",
         )
 
     def _get_data(self) -> dict:
