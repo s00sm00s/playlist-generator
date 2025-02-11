@@ -6,6 +6,7 @@ import re
 import logging
 import time
 import random
+import json
 
 class DaddyHD(BaseService):
     def __init__(self) -> None:
@@ -16,7 +17,7 @@ class DaddyHD(BaseService):
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
         self.session = requests.Session()
-        
+
         self.default_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -37,106 +38,102 @@ class DaddyHD(BaseService):
         """Make a request with retry logic and random delays"""
         if headers is None:
             headers = self.default_headers.copy()
-        
+
         headers["Host"] = urlparse(url).netloc
-        
+
         for i in range(retries):
             try:
                 if i > 0:
                     time.sleep(delay + random.random())
-                
+
                 response = self.session.get(url, headers=headers, timeout=10)
                 self.logger.debug(f"Request to {url} returned status {response.status_code}")
                 self.logger.debug(f"Response headers: {dict(response.headers)}")
-                
+
                 return response
-                
+
             except requests.exceptions.RequestException as e:
                 if i == retries - 1:
                     raise
                 self.logger.debug(f"Request failed (attempt {i+1}/{retries}): {str(e)}")
-        
+
         raise requests.exceptions.RequestException(f"Failed after {retries} retries")
 
-    def _get_config_data(self) -> dict:
-        try:
-            main_page_url = "https://thedaddy.to/24-7-channels.php"
-            headers = self.default_headers.copy()
-            headers.update({
-                "Referer": "https://thedaddy.to/",
-                "Origin": "https://thedaddy.to",
-                "Sec-Fetch-Site": "same-origin",
-            })
+    def _extract_stream_url(self, stream_page_url):
+        """Extracts the m3u8 URL from an individual stream page"""
+        response = self._make_request(stream_page_url)
+        if response.status_code != 200:
+            raise ValueError(f"Failed to load stream page: {stream_page_url}")
 
-            response = self._make_request(main_page_url, headers=headers)
-            soup = BeautifulSoup(response.text, "html.parser")
+        # Extract channelKey using regex
+        channel_key_match = re.search(r'var\s+channelKey\s*=\s*"([^"]+)"', response.text)
+        if not channel_key_match:
+            raise ValueError(f"channelKey not found in {stream_page_url}")
+        channel_key = channel_key_match.group(1)
+        self.logger.debug(f"Extracted channelKey: {channel_key}")
 
-            # Find a valid stream URL dynamically
-            stream_links = [a["href"] for a in soup.find_all("a", href=True) if "stream-" in a["href"]]
-            if not stream_links:
-                raise ValueError("No valid stream links found.")
+        # Fetch the server key
+        server_lookup_url = f"https://thedaddy.to/server_lookup.php?channel_id={channel_key}"
+        server_response = self._make_request(server_lookup_url)
 
-            # Use the first available stream URL
-            stream_url = urljoin(main_page_url, stream_links[0])
-            self.logger.debug(f"Extracted stream URL: {stream_url}")
+        # Parse JSON response
+        server_data = json.loads(server_response.text)
+        server_key = server_data.get("server_key")
+        if not server_key:
+            raise ValueError(f"server_key not found for channel {channel_key}")
+        self.logger.debug(f"Extracted server_key: {server_key}")
 
-            # Fetch the stream page
-            response = self._make_request(stream_url, headers=headers)
-            soup = BeautifulSoup(response.text, "html.parser")
+        # Construct the m3u8 URL
+        if server_key == "top1/cdn":
+            stream_url = f"https://top1.iosplayer.ru/top1/cdn/{channel_key}/mono.m3u8"
+        else:
+            stream_url = f"https://{server_key}new.iosplayer.ru/{server_key}/{channel_key}/mono.m3u8"
 
-            # Extract .m3u8 link
-            m3u8_pattern = r'https?://[^\s"\']+\.m3u8'
-            matches = re.findall(m3u8_pattern, response.text, re.IGNORECASE)
-
-            if matches:
-                stream_url = matches[0]
-                self.logger.debug(f"Extracted .m3u8 URL: {stream_url}")
-            else:
-                raise ValueError("No .m3u8 URL found.")
-
-            config = {
-                "endpoint": stream_url.strip(),
-                "referer": "https://thedaddy.to/"
-            }
-
-            return config
-
-        except Exception as e:
-            self.logger.error(f"Error in _get_config_data: {str(e)}")
-            raise
+        self.logger.debug(f"Final .m3u8 URL: {stream_url}")
+        return stream_url
 
     def _get_data(self) -> dict:
+        """Fetches the list of channels and their stream URLs"""
         try:
-            soup = BeautifulSoup(self._get_src(), "html.parser")
-            config_data = self._get_config_data()
+            response = self._make_request(self.SERVICE_URL)
+            soup = BeautifulSoup(response.text, "html.parser")
+
             channels_data = []
-            
-            channels_divs = soup.select("div.grid-item")
-            self.logger.debug(f"Found {len(channels_divs)} channel divs")
-            
-            for channel_div in channels_divs:
-                channel_slug = channel_div.select_one("a").get("href").strip()
-                FIRST_INDEX = channel_slug.find("stream-") + len("stream-")
-                LAST_INDEX = channel_slug.find(".php")
-                channel_id = channel_slug[FIRST_INDEX:LAST_INDEX]
-                channel_name = channel_div.text.strip()
-                
-                if "18+" in channel_name:
+            channel_links = [a["href"] for a in soup.find_all("a", href=True) if "stream-" in a["href"]]
+
+            self.logger.debug(f"Found {len(channel_links)} stream links")
+
+            for link in channel_links:
+                stream_page_url = urljoin(self.SERVICE_URL, link)
+
+                # Extract channel ID
+                match = re.search(r"stream-(\d+)\.php", link)
+                if not match:
                     continue
-                    
+                channel_id = match.group(1)
+
+                # Fetch the actual .m3u8 URL
+                try:
+                    stream_url = self._extract_stream_url(stream_page_url)
+                except Exception as e:
+                    self.logger.error(f"Skipping channel {channel_id}: {str(e)}")
+                    continue
+
+                # Extract channel name
+                channel_name = link.replace("stream-", "").replace(".php", "").strip()
                 channels_data.append({
                     "name": channel_name,
                     "logo": "",
                     "group": "DaddyHD",
-                    "stream-url": config_data.get("endpoint").replace("STREAM-ID", channel_id),
+                    "stream-url": stream_url,
                     "headers": {
-                        "referer": config_data.get("referer"),
+                        "referer": "https://thedaddy.to/",
                         "user-agent": self.default_headers["User-Agent"]
                     }
                 })
-            
+
             return channels_data
-            
+
         except Exception as e:
             self.logger.error(f"Error in _get_data: {str(e)}")
             raise
