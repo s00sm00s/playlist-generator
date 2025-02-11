@@ -58,98 +58,76 @@ class DaddyHD(BaseService):
         
         raise requests.exceptions.RequestException(f"Failed after {retries} retries")
 
-    def _get_config_data(self) -> dict:
-        try:
-            # Try direct stream URL first
-            stream_url = "https://thedaddy.to/stream-1.php"
-            headers = self.default_headers.copy()
-            headers.update({
-                "Referer": "https://thedaddy.to/",
-                "Origin": "https://thedaddy.to",
-                "Sec-Fetch-Site": "same-origin",
-            })
-            
-            response = self._make_request(stream_url, headers=headers)
-            self.logger.debug(f"Stream page content: {response.text[:500]}")  # Log first 500 chars
-            
-            # Try to find stream URL directly in the page
-            stream_patterns = [
-                r'source:\s*["\']?(https?://[^"\'\s]+)["\']?',
-                r'file:\s*["\']?(https?://[^"\'\s]+)["\']?',
-                r'src:\s*["\']?(https?://[^"\'\s]+)["\']?',
-                r'url:\s*["\']?(https?://[^"\'\s]+)["\']?',
-                r'player.src\(\s*["\']?(https?://[^"\'\s]+)["\']?\)',
-                r'source\s+src=["\']?(https?://[^"\'\s]+)["\']?',
-            ]
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            # Look for video elements
-            video_element = soup.find('video')
-            if video_element and video_element.get('src'):
-                self.logger.debug(f"Found video source: {video_element['src']}")
-                stream_url = video_element['src']
+   def _get_config_data(self) -> dict:
+    try:
+        stream_url = "https://thedaddy.to/stream-1.php"
+        headers = self.default_headers.copy()
+        headers.update({
+            "Referer": "https://thedaddy.to/",
+            "Origin": "https://thedaddy.to",
+            "Sec-Fetch-Site": "same-origin",
+        })
+        
+        response = self._make_request(stream_url, headers=headers)
+        self.logger.debug(f"Stream page content: {response.text[:500]}")  # Log first 500 chars
+        
+        # Updated regex pattern to specifically match .m3u8 URLs
+        m3u8_pattern = r'https?://[^\s"\']+\.m3u8'
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Look for <video> or <source> elements
+        video_element = soup.find('video')
+        if video_element and video_element.get('src') and '.m3u8' in video_element['src']:
+            self.logger.debug(f"Found video source: {video_element['src']}")
+            stream_url = video_element['src']
+        else:
+            source_element = soup.find('source')
+            if source_element and source_element.get('src') and '.m3u8' in source_element['src']:
+                self.logger.debug(f"Found source element: {source_element['src']}")
+                stream_url = source_element['src']
             else:
-                # Look for source elements within video tags
-                source_element = soup.find('source')
-                if source_element and source_element.get('src'):
-                    self.logger.debug(f"Found source element: {source_element['src']}")
-                    stream_url = source_element['src']
+                # Search for .m3u8 links in the page content
+                matches = re.findall(m3u8_pattern, response.text, re.IGNORECASE)
+                if matches:
+                    self.logger.debug(f"Found m3u8 URL: {matches[0]}")
+                    stream_url = matches[0]
                 else:
-                    # Try regex patterns
-                    for pattern in stream_patterns:
-                        matches = re.findall(pattern, response.text, re.IGNORECASE)
-                        if matches:
-                            self.logger.debug(f"Found stream URL with pattern {pattern}: {matches[0]}")
-                            stream_url = matches[0]
-                            break
-                    
-                    # If still no match, try to find any iframe
-                    if not matches:
-                        iframe = soup.find('iframe')
-                        if iframe and iframe.get('src'):
-                            iframe_url = iframe['src']
-                            self.logger.debug(f"Found iframe URL: {iframe_url}")
-                            
-                            # Get content from iframe
-                            iframe_headers = headers.copy()
-                            iframe_headers.update({
-                                "Referer": stream_url,
-                                "Sec-Fetch-Dest": "iframe",
-                            })
-                            
-                            iframe_response = self._make_request(iframe_url, headers=iframe_headers)
-                            iframe_source = iframe_response.text
-                            
-                            # Try to find stream URL in iframe content
-                            for pattern in stream_patterns:
-                                matches = re.findall(pattern, iframe_source, re.IGNORECASE)
-                                if matches:
-                                    stream_url = matches[0]
-                                    break
-            
-            if not stream_url:
-                raise ValueError("Could not find stream source")
-            
-            # Clean up the stream URL
-            stream_url = stream_url.strip().strip('"\'')
-            base_url = stream_url.replace("1", "STREAM-ID")
-            
-            config = {
-                "endpoint": base_url,
-                "referer": "https://thedaddy.to/"
-            }
-            
-            self.logger.debug(f"Final config: {config}")
-            return config
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Network error in _get_config_data: {str(e)}")
-            raise
-        except Exception as e:
-            self.logger.error(f"Error in _get_config_data: {str(e)}")
-            raise
+                    # If no direct .m3u8 link found, check if there's an iframe to parse
+                    iframe = soup.find('iframe')
+                    if iframe and iframe.get('src'):
+                        iframe_url = urljoin(stream_url, iframe['src'])
+                        self.logger.debug(f"Found iframe URL: {iframe_url}")
 
+                        iframe_response = self._make_request(iframe_url, headers=headers)
+                        iframe_source = iframe_response.text
+                        
+                        matches = re.findall(m3u8_pattern, iframe_source, re.IGNORECASE)
+                        if matches:
+                            self.logger.debug(f"Found m3u8 URL in iframe: {matches[0]}")
+                            stream_url = matches[0]
+        
+        if not stream_url or not stream_url.endswith(".m3u8"):
+            raise ValueError("Could not find valid .m3u8 stream source")
+        
+        # Clean up the stream URL
+        stream_url = stream_url.strip().strip('"\'')
+        base_url = stream_url.replace("1", "STREAM-ID")
+        
+        config = {
+            "endpoint": base_url,
+            "referer": "https://thedaddy.to/"
+        }
+        
+        self.logger.debug(f"Final config: {config}")
+        return config
+        
+    except requests.exceptions.RequestException as e:
+        self.logger.error(f"Network error in _get_config_data: {str(e)}")
+        raise
+    except Exception as e:
+        self.logger.error(f"Error in _get_config_data: {str(e)}")
+        raise
     def _get_data(self) -> dict:
         try:
             soup = BeautifulSoup(self._get_src(), "html.parser")
