@@ -115,9 +115,12 @@ class DaddyHD:
             soup = BeautifulSoup(response.text, "html.parser")
 
             channels_data = []
-            channel_links = soup.select("div.grid-item a[href^='/stream/stream-']")
-            
+            channel_links = soup.select("div.grid-item a[href*='/stream/stream-']")
+
             self.logger.debug(f"Found {len(channel_links)} channel links on the page.")
+
+            if not channel_links:
+                self.logger.error("No channel links found. Page structure might have changed.")
 
             for link in channel_links:
                 channel_name = link.get_text(strip=True)
