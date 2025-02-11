@@ -17,10 +17,9 @@ class DaddyHD(BaseService):
         self.logger = logging.getLogger(__name__)
         self.session = requests.Session()
         
-        # More realistic browser headers
         self.default_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
@@ -32,8 +31,6 @@ class DaddyHD(BaseService):
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "max-age=0",
-            "DNT": "1",
         }
 
     def _make_request(self, url, headers=None, retries=3, delay=1):
@@ -45,25 +42,17 @@ class DaddyHD(BaseService):
         
         for i in range(retries):
             try:
-                # Add a random delay between requests
                 if i > 0:
                     time.sleep(delay + random.random())
                 
                 response = self.session.get(url, headers=headers, timeout=10)
                 self.logger.debug(f"Request to {url} returned status {response.status_code}")
-                
-                # Handle potential cloudflare or other protection
-                if response.status_code == 403:
-                    if i < retries - 1:  # If we have retries left
-                        self.logger.debug(f"Got 403, retrying with modified headers...")
-                        # Modify headers slightly for next attempt
-                        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                        continue
+                self.logger.debug(f"Response headers: {dict(response.headers)}")
                 
                 return response
                 
             except requests.exceptions.RequestException as e:
-                if i == retries - 1:  # If this was our last retry
+                if i == retries - 1:
                     raise
                 self.logger.debug(f"Request failed (attempt {i+1}/{retries}): {str(e)}")
         
@@ -71,79 +60,87 @@ class DaddyHD(BaseService):
 
     def _get_config_data(self) -> dict:
         try:
-            # Initial request to the main site to get cookies
-            main_url = "https://thedaddy.to/"
-            self._make_request(main_url)
-            
-            # Now try the embed URL
-            embed_url = "https://dlhd.sx/embed/stream-1.php"
-            parsed_embed = urlparse(embed_url)
-            
-            # Add referrer from main site
+            # Try direct stream URL first
+            stream_url = "https://thedaddy.to/stream-1.php"
             headers = self.default_headers.copy()
             headers.update({
-                "Referer": main_url,
+                "Referer": "https://thedaddy.to/",
                 "Origin": "https://thedaddy.to",
                 "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Dest": "iframe",
             })
             
-            response = self._make_request(embed_url, headers=headers)
+            response = self._make_request(stream_url, headers=headers)
+            self.logger.debug(f"Stream page content: {response.text[:500]}")  # Log first 500 chars
             
-            if response.status_code == 301 or response.status_code == 302:
-                # Handle redirect manually if needed
-                redirect_url = response.headers.get('Location')
-                if redirect_url:
-                    embed_url = urljoin(embed_url, redirect_url)
-                    response = self._make_request(embed_url, headers=headers)
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            iframe = soup.find("iframe", {"id": "thatframe"})
-            
-            if not iframe or "src" not in iframe.attrs:
-                raise ValueError("Could not find iframe source")
-                
-            iframe_url = iframe["src"]
-            self.logger.debug(f"Found iframe URL: {iframe_url}")
-            iframe_parsed = urlparse(iframe_url)
-            
-            # Update headers for the iframe request
-            headers.update({
-                "Referer": embed_url,
-                "Origin": f"{parsed_embed.scheme}://{parsed_embed.netloc}",
-                "Sec-Fetch-Site": "cross-site",
-            })
-            
-            iframe_response = self._make_request(iframe_url, headers=headers)
-            iframe_source = iframe_response.text
-            
-            # Look for source in various formats
-            patterns = [
+            # Try to find stream URL directly in the page
+            stream_patterns = [
                 r'source:\s*["\']?(https?://[^"\'\s]+)["\']?',
                 r'file:\s*["\']?(https?://[^"\'\s]+)["\']?',
                 r'src:\s*["\']?(https?://[^"\'\s]+)["\']?',
-                r"source:'([^']+)'",
-                r'source: "([^"]+)"',
+                r'url:\s*["\']?(https?://[^"\'\s]+)["\']?',
+                r'player.src\(\s*["\']?(https?://[^"\'\s]+)["\']?\)',
+                r'source\s+src=["\']?(https?://[^"\'\s]+)["\']?',
             ]
             
-            matches = []
-            for pattern in patterns:
-                found = re.findall(pattern, iframe_source, re.IGNORECASE)
-                if found:
-                    matches.extend(found)
-                    self.logger.debug(f"Found matches with pattern {pattern}: {found}")
+            soup = BeautifulSoup(response.text, "html.parser")
             
-            if not matches:
-                raise ValueError("No stream sources found")
+            # Look for video elements
+            video_element = soup.find('video')
+            if video_element and video_element.get('src'):
+                self.logger.debug(f"Found video source: {video_element['src']}")
+                stream_url = video_element['src']
+            else:
+                # Look for source elements within video tags
+                source_element = soup.find('source')
+                if source_element and source_element.get('src'):
+                    self.logger.debug(f"Found source element: {source_element['src']}")
+                    stream_url = source_element['src']
+                else:
+                    # Try regex patterns
+                    for pattern in stream_patterns:
+                        matches = re.findall(pattern, response.text, re.IGNORECASE)
+                        if matches:
+                            self.logger.debug(f"Found stream URL with pattern {pattern}: {matches[0]}")
+                            stream_url = matches[0]
+                            break
+                    
+                    # If still no match, try to find any iframe
+                    if not matches:
+                        iframe = soup.find('iframe')
+                        if iframe and iframe.get('src'):
+                            iframe_url = iframe['src']
+                            self.logger.debug(f"Found iframe URL: {iframe_url}")
+                            
+                            # Get content from iframe
+                            iframe_headers = headers.copy()
+                            iframe_headers.update({
+                                "Referer": stream_url,
+                                "Sec-Fetch-Dest": "iframe",
+                            })
+                            
+                            iframe_response = self._make_request(iframe_url, headers=iframe_headers)
+                            iframe_source = iframe_response.text
+                            
+                            # Try to find stream URL in iframe content
+                            for pattern in stream_patterns:
+                                matches = re.findall(pattern, iframe_source, re.IGNORECASE)
+                                if matches:
+                                    stream_url = matches[0]
+                                    break
             
-            config_endpoint = matches[-1].replace("1", "STREAM-ID")
+            if not stream_url:
+                raise ValueError("Could not find stream source")
+            
+            # Clean up the stream URL
+            stream_url = stream_url.strip().strip('"\'')
+            base_url = stream_url.replace("1", "STREAM-ID")
             
             config = {
-                "endpoint": config_endpoint,
-                "referer": f"{iframe_parsed.scheme}://{iframe_parsed.netloc}/"
+                "endpoint": base_url,
+                "referer": "https://thedaddy.to/"
             }
             
+            self.logger.debug(f"Final config: {config}")
             return config
             
         except requests.exceptions.RequestException as e:
