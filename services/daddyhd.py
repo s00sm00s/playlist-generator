@@ -5,7 +5,6 @@ import re
 import logging
 import time
 import random
-import cloudscraper
 
 class DaddyHD:
     def __init__(self) -> None:
@@ -15,8 +14,8 @@ class DaddyHD:
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
         
-        # Use cloudscraper to bypass Cloudflare protection
-        self.session = cloudscraper.create_scraper()
+        # Use requests session
+        self.session = requests.Session()
         
         self.default_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -35,7 +34,7 @@ class DaddyHD:
         }
 
     def _make_request(self, url, headers=None, retries=3, delay=1):
-        """Make a request with retry logic and Cloudflare bypass"""
+        """Make a request with retry logic"""
         if headers is None:
             headers = self.default_headers.copy()
         
