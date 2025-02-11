@@ -63,7 +63,7 @@ class DaddyHD(BaseService):
             stream_url = "https://thedaddy.to/stream-1.php"
             headers = self.default_headers.copy()
             headers.update({
-                "Referer": "https://thedaddy.to/",
+                "Referer": "https://thedaddy.to/24-7-channels.php",
                 "Origin": "https://thedaddy.to",
                 "Sec-Fetch-Site": "same-origin",
             })
